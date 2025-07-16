@@ -1,17 +1,20 @@
 from whisperx.diarize import DiarizationPipeline
 from pathlib import Path
+import traceback
 import requests
 import whisperx
 import logging
 import ffmpeg
+import shutil
 import json
+import boto3
 import os
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 
 
 def ai_chat(prompt):
-    url = "https://ai.hackclub.com/chat/completions"
+    url = "https://ai.hackclub.com/chat/completions"  # this may need to be updated in case they close this pipeline
     headers = {"Content-Type": "application/json"}
     data = {"messages": [{"role": "user", "content": prompt}]}
     try:
@@ -27,13 +30,13 @@ def ai_chat(prompt):
 def diarize(audio_file, out):
     logging.info("Starting diarizing of segments...")
     audio = whisperx.load_audio(audio_file)
-    diarize_model = DiarizationPipeline(use_auth_token="TOKEN", device="cpu")
+    diarize_model = DiarizationPipeline(use_auth_token="YOUR TOKEN", device="cuda")
     diarize_segments = diarize_model(audio, min_speakers=2, max_speakers=2)
     return clean(diarize_segments, out)
 
 
 def save_json(data, filename, out):
-    with open(out + filename, "w") as f:
+    with open(os.path.join(out, filename), "w") as f:
         json.dump(data, f, indent=2)
     logging.info(f"Saved data to {filename}")
 
@@ -96,7 +99,7 @@ def divideText(max_length, text):
 
 
 def addText(video, text, summarized_video):
-    font_path = 'font.ttf'
+    font_path = '/tmp/font.ttf'
     lines = divideText(30, text)
     line_spacing_factor = 0.05
     start_offset_factor = 0.04
@@ -142,18 +145,46 @@ def cut(in_data, out, video):
         summarize_text(output_path, transcriptions[idx]["segments"][0]["text"])
 
 
-def make_dir():
-    logging.info("Making output directory...")
-    o_dir = f"out/{Path(video_filename).stem}/"
-    os.makedirs(o_dir, exist_ok=True)
-    return o_dir
-
-
 if __name__ == "__main__":
-    transcription.model = whisperx.load_model("tiny", device="cpu", compute_type="int8", download_root="models/")
-    video_filename = 'media/' + input("Enter the video file to perform split operation on: ")
-    mp3_filename = video_filename
-    out_dir = make_dir()
-    logging.info(f"Converting {video_filename} to MP3...")
-    cut(diarize(mp3_filename, out_dir), out_dir, mp3_filename)
-    logging.info("All operations completed successfully! Check the 'out' directory for results.")
+    s3 = boto3.client('s3')
+    bucket_name = "colab-migration"
+    media_prefix = "media/"
+    video_keys = [obj["Key"] for obj in s3.list_objects_v2(Bucket=bucket_name, Prefix=media_prefix)["Contents"] if obj["Key"].lower().endswith((".mp4", ".mov", ".mkv"))]
+    if not video_keys:
+        logging.info("No video files found in the specified S3 bucket.")
+        exit(0)
+    else:
+        tmp_dir = "/tmp/"
+        os.makedirs(tmp_dir, exist_ok=True)
+        tmp_out_dir = f"{tmp_dir}/out/"
+        os.makedirs(tmp_out_dir, exist_ok=True)
+        s3.download_file(bucket_name, 'font.ttf', '/tmp/font.ttf')
+        transcription.model = whisperx.load_model("tiny", device="cuda", compute_type="float16")
+        for video_key in video_keys:
+            try:
+                logging.info(f"Processing video: {video_key}")
+                local_video_path = os.path.join(tmp_dir, Path(video_key).name)
+                s3.download_file(bucket_name, video_key, local_video_path)
+                out_dir = os.path.join(tmp_out_dir, Path(video_key).stem)
+                cut(diarize(local_video_path, out_dir), out_dir, local_video_path)
+                for root, _, files in os.walk(out_dir):
+                    for file in files:
+                        local_file_path = os.path.join(root, file)
+                        s3_key = os.path.relpath(local_file_path, "/tmp/")
+                        s3.upload_file(local_file_path, bucket_name, s3_key)
+                logging.info(f"All operations completed successfully on {video_key}! Check the 'out' directory for results.")
+                try:
+                    os.remove(local_video_path)
+                    shutil.rmtree(out_dir, ignore_errors=True)
+                    logging.info(f"Cleaned up local files for {video_key}")
+                except Exception as e:
+                    logging.warning(f"Error cleaning up files for {video_key}: {e}")
+            except Exception as e:
+                logging.error(f"Error processing {video_key}: {e}")
+                logging.error(traceback.format_exc())
+                logging.info(f"Skipping deletion and continuing with next video.")
+                continue
+        logging.info("All videos processed successfully! Check the S3 bucket out for results.")
+        shutil.rmtree(tmp_out_dir, ignore_errors=True)
+        logging.info("Temporary output directory cleaned up.")
+        exit(0)
