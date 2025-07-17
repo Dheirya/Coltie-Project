@@ -11,6 +11,7 @@ import boto3
 import os
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+runtime_dir = "runtime"
 
 
 def ai_chat(prompt):
@@ -36,6 +37,7 @@ def diarize(audio_file, out):
 
 
 def save_json(data, filename, out):
+    os.makedirs(out, exist_ok=True)
     with open(os.path.join(out, filename), "w") as f:
         json.dump(data, f, indent=2)
     logging.info(f"Saved data to {filename}")
@@ -72,7 +74,7 @@ def group(clean_segments, out):
 def transcription(start, end, segment_index, video_path, out_directory):
     logging.info('Transcribing a clip...')
     segment_path = os.path.join(out_directory, f"pre_segment_{segment_index + 1:03d}.mp3")
-    ffmpeg.input(video_path, ss=start, to=end).output(segment_path, acodec='libmp3lame').run(overwrite_output=True, quiet=True)
+    ffmpeg.input(video_path, ss=start, to=end, hwaccel="nvdec").output(segment_path, acodec='pcm_s16le', ac=1, ar='16000', format='wav').run(overwrite_output=True)
     audio = whisperx.load_audio(segment_path)
     result = transcription.model.transcribe(audio, batch_size=16, language="en")
     with open(os.path.join(out_directory, f"transcription_{segment_index:03d}.json"), "w") as f:
@@ -98,23 +100,28 @@ def divideText(max_length, text):
     return lines
 
 
+def escape_ffmpeg_text(text):
+    return text.replace('\\', '\\\\').replace(':', '\\:').replace("'", "\\'")
+
+
 def addText(video, text, summarized_video):
-    font_path = '/tmp/font.ttf'
+    font_path = f'{runtime_dir}/font.ttf'
     lines = divideText(30, text)
     line_spacing_factor = 0.05
     start_offset_factor = 0.04
     vf_filters = []
     for i, line in enumerate(lines):
         y_expr = f"h*{start_offset_factor} + {i}*h*{line_spacing_factor}"
+        escaped_line = escape_ffmpeg_text(line)
         drawtext = (
-            f"drawtext=text='{line}':"
+            f"drawtext=text='{escaped_line}':"
             f"fontfile='{font_path}':fontcolor=white:fontsize=h*0.03:"
             f"x=(w-text_w)/2:y={y_expr}:"
             f"box=1:boxcolor=black@0.5:boxborderw=20"
         )
         vf_filters.append(drawtext)
     vf_str = ",".join(vf_filters)
-    ffmpeg.input(video).output(summarized_video, vf=vf_str, acodec='copy').run(overwrite_output=True)
+    ffmpeg.input(video, hwaccel="nvdec").output(summarized_video, vf=vf_str, vcodec="h264_nvenc", preset="p4", crf=23, rc="vbr", cq=23, b=0, acodec="copy", threads=0).run(overwrite_output=True)
 
 
 def summarize_text(video, text):
@@ -141,7 +148,7 @@ def cut(in_data, out, video):
         duration = end - start
         output_path = f"{out}/clips/clip_{idx + 1:03d}.mov"
         logging.info(f"Cutting: {start:.2f}s → {end:.2f}s → {output_path}")
-        (ffmpeg.input(video, ss=start, t=duration).output(output_path, codec="copy").run(overwrite_output=True))
+        (ffmpeg.input(video, ss=start, t=duration, hwaccel="nvdec").output(output_path, vcodec="h264_nvenc", preset="p4", crf=23, rc="vbr", cq=23, b=0, acodec="copy", threads=0).run(overwrite_output=True))
         summarize_text(output_path, transcriptions[idx]["segments"][0]["text"])
 
 
@@ -154,11 +161,11 @@ if __name__ == "__main__":
         logging.info("No video files found in the specified S3 bucket.")
         exit(0)
     else:
-        tmp_dir = "/tmp/"
+        tmp_dir = runtime_dir
         os.makedirs(tmp_dir, exist_ok=True)
         tmp_out_dir = f"{tmp_dir}/out/"
         os.makedirs(tmp_out_dir, exist_ok=True)
-        s3.download_file(bucket_name, 'font.ttf', '/tmp/font.ttf')
+        s3.download_file(bucket_name, 'font.ttf', f'{runtime_dir}/font.ttf')
         transcription.model = whisperx.load_model("tiny", device="cuda", compute_type="float16")
         for video_key in video_keys:
             try:
@@ -170,7 +177,7 @@ if __name__ == "__main__":
                 for root, _, files in os.walk(out_dir):
                     for file in files:
                         local_file_path = os.path.join(root, file)
-                        s3_key = os.path.relpath(local_file_path, "/tmp/")
+                        s3_key = os.path.relpath(local_file_path, runtime_dir)
                         s3.upload_file(local_file_path, bucket_name, s3_key)
                 logging.info(f"All operations completed successfully on {video_key}! Check the 'out' directory for results.")
                 try:
@@ -185,6 +192,6 @@ if __name__ == "__main__":
                 logging.info(f"Skipping deletion and continuing with next video.")
                 continue
         logging.info("All videos processed successfully! Check the S3 bucket out for results.")
-        shutil.rmtree(tmp_out_dir, ignore_errors=True)
+        shutil.rmtree(runtime_dir, ignore_errors=True)
         logging.info("Temporary output directory cleaned up.")
         exit(0)
