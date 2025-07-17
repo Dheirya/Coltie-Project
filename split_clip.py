@@ -1,5 +1,6 @@
 from whisperx.diarize import DiarizationPipeline
 from pathlib import Path
+import subprocess
 import traceback
 import requests
 import whisperx
@@ -194,4 +195,5 @@ if __name__ == "__main__":
         logging.info("All videos processed successfully! Check the S3 bucket out for results.")
         shutil.rmtree(runtime_dir, ignore_errors=True)
         logging.info("Temporary output directory cleaned up.")
-        exit(0)
+        logging.info("Shutting down the system now...")
+        subprocess.run(['sudo', 'shutdown', '-h', 'now'], check=True)
