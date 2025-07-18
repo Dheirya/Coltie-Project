@@ -16,7 +16,7 @@ runtime_dir = "runtime"
 
 
 def ai_chat(prompt):
-    url = "https://ai.hackclub.com/chat/completions"  # this may need to be updated in case they close this pipeline
+    url = "https://ai.hackclub.com/chat/completions"  # this will need to be updated
     headers = {"Content-Type": "application/json"}
     data = {"messages": [{"role": "user", "content": prompt}]}
     try:
@@ -155,11 +155,11 @@ def cut(in_data, out, video):
 
 if __name__ == "__main__":
     s3 = boto3.client('s3')
-    bucket_name = "colab-migration"
+    bucket_name = "colab-migration-2"
     media_prefix = "media/"
     video_keys = [obj["Key"] for obj in s3.list_objects_v2(Bucket=bucket_name, Prefix=media_prefix)["Contents"] if obj["Key"].lower().endswith((".mp4", ".mov", ".mkv"))]
     if not video_keys:
-        logging.info("No video files found in the specified S3 bucket.")
+        logging.info("No video files found in the specified S3 bucket! Stopping operation.")
         exit(0)
     else:
         tmp_dir = runtime_dir
@@ -192,8 +192,8 @@ if __name__ == "__main__":
                 logging.error(traceback.format_exc())
                 logging.info(f"Skipping deletion and continuing with next video.")
                 continue
-        logging.info("All videos processed successfully! Check the S3 bucket out for results.")
-        shutil.rmtree(runtime_dir, ignore_errors=True)
-        logging.info("Temporary output directory cleaned up.")
-        logging.info("Shutting down the system now...")
-        subprocess.run(['sudo', 'shutdown', '-h', 'now'], check=True)
+            logging.info("All videos processed successfully! Check the S3 bucket out for results.")
+            shutil.rmtree(runtime_dir, ignore_errors=True)
+            logging.info("Temporary output directory cleaned up.")
+            logging.info("Shutting down the system now...")
+            subprocess.run(['sudo', 'shutdown', '-h', 'now'], check=True)
