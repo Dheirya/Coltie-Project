@@ -16,23 +16,23 @@ runtime_dir = "runtime"
 
 
 def ai_chat(prompt):
-    url = "https://ai.hackclub.com/chat/completions"  # this will need to be updated
-    headers = {"Content-Type": "application/json"}
-    data = {"messages": [{"role": "user", "content": prompt}]}
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {"Content-Type": "application/json", "Authorization": "Bearer sk-token"}
+    data = {"model": "gpt-4.1-nano", "messages": [{"role": "user", "content": prompt}]}
     try:
         response = requests.post(url, headers=headers, json=data)
         response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"]
     except requests.RequestException as e:
-        logging.warning(f"Error: {e}")
+        logging.warning(f"Request error: {e}")
     except (KeyError, IndexError):
-        logging.warning("Error: Unexpected response format")
+        logging.warning("Unexpected response format")
 
 
 def diarize(audio_file, out):
     logging.info("Starting diarizing of segments...")
     audio = whisperx.load_audio(audio_file)
-    diarize_model = DiarizationPipeline(use_auth_token="YOUR TOKEN", device="cuda")
+    diarize_model = DiarizationPipeline(use_auth_token="hf-token", device="cuda")
     diarize_segments = diarize_model(audio, min_speakers=2, max_speakers=2)
     return clean(diarize_segments, out)
 
@@ -127,7 +127,7 @@ def addText(video, text, summarized_video):
 
 def summarize_text(video, text):
     logging.info('Summarizing text with AI...')
-    summary = ai_chat(f"Summarize this interview question in under 120 characters (NO QUOTATION MARKS): {text}")
+    summary = ai_chat(f"This is a clip from an interview being posted on social media. Summarize the following interview question in under 120 characters. Do not use quotation marks. Make it punchy and match the tone for social media captions: {text}")
     summarized_video = str(Path(video).with_stem(Path(video).stem + "_final"))
     logging.info("Adding summary text...")
     addText(video, summary, summarized_video)
